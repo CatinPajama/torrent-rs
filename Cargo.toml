@@ -1,0 +1,16 @@
+[package]
+name = "async_rust"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = "0.1.83"
+bit-vec = "0.8.0"
+reqwest = "0.12.9"
+serde = "1.0.215"
+serde_bencode = "0.2.4"
+serde_bytes = "0.11.15"
+serde_derive = "1.0.215"
+sha1 = "0.10.6"
+tokio = { version = "1", features = ["full"] }
+url = "2.5.3"
