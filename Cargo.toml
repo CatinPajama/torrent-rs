@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 async-trait = "0.1.83"
 bit-vec = "0.8.0"
+rand = "0.8.5"
 reqwest = "0.12.9"
 serde = "1.0.215"
 serde_bencode = "0.2.4"

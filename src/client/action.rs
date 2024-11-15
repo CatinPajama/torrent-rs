@@ -1,5 +1,7 @@
 use bit_vec::BitVec;
 use tokio::sync::oneshot;
+
+use super::peer::PeerWriterHandle;
 pub enum Message {
     KeepAlive,
     Unchoke,
@@ -16,8 +18,9 @@ pub enum Message {
 
 pub enum PeerManagerAction {
     MessageAction(Message),
-    UploadSpeed(f64),
+    Piece(u32, u32, Vec<u8>, i64),
     Download(u32),
+    AddPeer(PeerWriterHandle),
 }
 
 pub struct FileMessage {

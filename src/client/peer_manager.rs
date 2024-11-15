@@ -4,9 +4,12 @@ use super::action::{Message, PeerManagerAction};
 use super::file::FileManagerHandle;
 use super::peer::{create_peer, PeerWriterHandle};
 use super::torrent::Torrent;
+use rand::seq::IteratorRandom;
+use rand::thread_rng;
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::timeout;
 use tokio::{select, time::interval};
 
 struct PeerHandle;
@@ -38,7 +41,12 @@ pub struct PeerManagerHandle {
 
 impl PeerManagerHandle {
     pub async fn new(torrent: Torrent) -> PeerManagerHandle {
-        println!("PIECE LENGTH : {} LENGTH : {} COUNT : {}", torrent.torrent_file.info.piece_length,torrent.torrent_file.info.length, torrent.torrent_file.info.pieces.len() / 20);
+        println!(
+            "PIECE LENGTH : {} LENGTH : {} COUNT : {}",
+            torrent.torrent_file.info.piece_length,
+            torrent.torrent_file.info.length,
+            torrent.torrent_file.info.pieces.len() / 20
+        );
         let (sender, receiver) = mpsc::channel(100);
         let peer_manager_handle = PeerManagerHandle {
             sender: sender.clone(),
@@ -49,40 +57,44 @@ impl PeerManagerHandle {
             peer_manager_handle.clone(),
         )
         .await;
-        let mut peer_handler = HashMap::new();
-        let mut peer_state = HashMap::new();
-        for peer_ip in torrent.peer_ips.iter().take(10) {
-            println!("FOUND {}",peer_ip);
+        //let mut peer_handler = HashMap::new();
+        //let mut peer_state = HashMap::new();
+        for peer_ip in torrent.peer_ips {
+            println!("FOUND {}", peer_ip);
 
-            let mut interval = interval(Duration::from_secs(1));
-            select! {
-                Ok((_, peer_writer_handle)) = create_peer(
-                    peer_ip.clone(),
-                    sender.clone(),
-                    torrent.peer_id.clone(),
-                    torrent.info_hash.clone(),
-                ) => {
-                    println!("connected to {}",peer_ip);
-                    peer_writer_handle.sender.send(Message::Interested).await;
-                    peer_handler.insert(peer_ip.clone(), peer_writer_handle);
-                    peer_state.insert(
-                        peer_ip.clone(),
-                        (ChokedState::Choked, InterestedState::NotInterested, 0.0),
-                    );
+            let ip = peer_ip.clone();
+            let sender = sender.clone();
+            let peer_id = torrent.peer_id.clone();
+            let info_hash = torrent.info_hash.clone();
+            //let mut interval = interval(Duration::from_secs(100));
+            tokio::spawn(async move {
+                if let Ok(Ok((_, peer_writer_handle))) = timeout(
+                    Duration::from_secs(15),
+                    create_peer(ip.clone(), sender.clone(), peer_id, info_hash),
+                )
+                .await
+                {
+                    let _ = peer_writer_handle.sender.send(Message::Interested).await;
+                    let _ = sender
+                        .send(Action {
+                            id: peer_ip.clone(),
+                            message: PeerManagerAction::AddPeer(peer_writer_handle),
+                        })
+                        .await;
+                    //_ = interval.tick() => {}
                 }
-                _ = interval.tick() => {}
-            }
+            });
         }
         let piece_count = torrent.torrent_file.info.pieces.len() / 20;
         let actor = PeerManagerActor {
-            peer_handler,
-            peer_state,
+            peer_handler: HashMap::new(),
+            peer_state: HashMap::new(),
             receiver,
             file_handler,
             bitfield: vec![0; piece_count],
             have_bitfield: vec![false; piece_count],
             length: torrent.torrent_file.info.length,
-            piece_length : torrent.torrent_file.info.piece_length,
+            piece_length: torrent.torrent_file.info.piece_length,
         };
         run_piece_manager_actor(actor).await;
         peer_manager_handle
@@ -91,17 +103,17 @@ impl PeerManagerHandle {
 
 struct PeerManagerActor {
     receiver: tokio::sync::mpsc::Receiver<Action>,
-    peer_state: HashMap<String, (ChokedState, InterestedState, f64)>,
+    peer_state: HashMap<String, (ChokedState, InterestedState, i64)>,
     peer_handler: HashMap<String, PeerWriterHandle>,
     file_handler: FileManagerHandle,
     bitfield: Vec<i64>,
     have_bitfield: Vec<bool>,
     length: i64,
-    piece_length : i64,
+    piece_length: i64,
 }
 
 async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
-    let mut choke_interval = interval(Duration::from_secs(10));
+    let mut choke_interval = interval(Duration::from_secs(20));
     let mut request_interval = interval(Duration::from_secs(10));
     loop {
         println!("hi");
@@ -160,38 +172,48 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
                         }
                         // ask the file handler to send Piece message
                     },
-                    Message::Piece(index,begin,block) => {
+                    //
+                    _ => {}
+                }
+                    },
+                    // PeerManagerAction::UploadSpeed(speed) => {
+                    //     if let Some(value) = actor.peer_state.get_mut(&action.id) {
+                    //         value.2 = speed;
+                    //     }
+                    // }
+                    PeerManagerAction::Download(index) => {
+                        actor.have_bitfield[index as usize] = true;
+                    }
+                    PeerManagerAction::AddPeer(write_handle) => {
+                        actor.peer_handler.insert(action.id.clone(),write_handle);
+                        actor.peer_state.insert(action.id,(ChokedState::Choked,InterestedState::NotInterested,0));
+                    }
+                    PeerManagerAction::Piece(index,begin,block,speed) => {
+                        // TODO check piece hash
+                        if let Some(value) = actor.peer_state.get_mut(&action.id) {
+                                    value.2 = speed;
+                        }
                         if !actor.have_bitfield[index as usize] {
                             println!("Downloaded piece {}",index);
                             let (sender, _) = oneshot::channel();
                             let _ = actor.file_handler.sender.send(FileMessage{sender, message : FileAction::Write(index,begin,block)}).await;
                         }
-                       
-                        }
-                            _ => {}
-                }
-                    },
-                    PeerManagerAction::UploadSpeed(speed) => {
-                        if let Some(value) = actor.peer_state.get_mut(&action.id) {
-                            value.2 = speed;
-                        }
-                    }
-                    PeerManagerAction::Download(index) => {
-                        actor.have_bitfield[index as usize] = true;
                     }
                 }
             },
             _ = choke_interval.tick() => {
-                let mut best_peer : String = String::new();
-                let mut max_speed = -1.0;
-                for (key,value) in &actor.peer_state  {
-                    if max_speed < value.2 {
-                        best_peer = key.to_string();
-                        max_speed = value.2;
-                    }
+
+                let mut peer_sort_by_upload : Vec<(i64,&String)> = actor.peer_state.iter().map(|(k,v)| (v.2,k)).collect();
+                peer_sort_by_upload.sort_by(|a, b| b.0.cmp(&a.0));
+                for (_,value) in peer_sort_by_upload.iter().take(3) {
+                    println!("UNCHOKE MESSAGEG TO {}",value);
+                    let _ = actor.peer_handler[*value].sender.send(Message::Unchoke).await;
                 }
-                println!("UNCHOKE MESSAGEG TO {}",best_peer);
-                let _ = actor.peer_handler[&best_peer].sender.send(Message::Unchoke).await;
+                let mut rng = thread_rng();
+                let rand_peer_opt = peer_sort_by_upload.iter().skip(3).choose(&mut rng);
+                if let Some((_,rand_peer)) = rand_peer_opt {
+                    let _ = actor.peer_handler[*rand_peer].sender.send(Message::Unchoke).await;
+                }
             }
             _ = request_interval.tick() => {
                 let mut lowest = i64::MAX;
