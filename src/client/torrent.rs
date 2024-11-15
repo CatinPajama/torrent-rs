@@ -67,16 +67,21 @@ pub struct Torrent {
     pub torrent_file: TorrentFile,
     pub info_hash: Vec<u8>,
     pub peer_ips: Vec<String>,
+    port: u32,
 }
 
 impl Torrent {
-    pub fn new(path: &str) -> Result<Torrent, Box<dyn std::error::Error>> {
+    pub fn new(
+        path: &str,
+        port: u32,
+        peer_id: String,
+    ) -> Result<Torrent, Box<dyn std::error::Error>> {
         let mut file = fs::File::open(path).unwrap();
         let mut contents = vec![];
         file.read_to_end(&mut contents).unwrap();
         let torrent_file = de::from_bytes::<TorrentFile>(&contents).unwrap();
         let mut peer_hasher = sha1::Sha1::new();
-        peer_hasher.update("1234");
+        peer_hasher.update(peer_id);
         let peer_hash = peer_hasher.finalize().into_iter().collect::<Vec<u8>>();
 
         let mut info_hasher = Sha1::new();
@@ -90,6 +95,7 @@ impl Torrent {
 
         Ok(Torrent {
             // TODO
+            port,
             torrent_file,
             info_hash: info_hash.into_iter().collect::<Vec<u8>>(),
             peer_id: peer_hash,
@@ -106,7 +112,7 @@ impl Torrent {
             uploaded: 0,
             left: self.torrent_file.info.length,
             peer_id: url::form_urlencoded::byte_serialize(&self.peer_id).collect(),
-            port: 6000,
+            port: self.port as i64,
             event: "started".to_string(),
         })
     }

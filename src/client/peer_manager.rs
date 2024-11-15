@@ -59,7 +59,7 @@ impl PeerManagerHandle {
         .await;
         //let mut peer_handler = HashMap::new();
         //let mut peer_state = HashMap::new();
-        for peer_ip in torrent.peer_ips {
+        for peer_ip in torrent.peer_ips.into_iter().take(10) {
             println!("FOUND {}", peer_ip);
 
             let ip = peer_ip.clone();

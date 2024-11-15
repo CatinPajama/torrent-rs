@@ -8,8 +8,8 @@ mod tracker;
 use peer_manager::PeerManagerHandle;
 use torrent::Torrent;
 
-pub async fn run() {
-    let mut torrent = Torrent::new("assets/thermo.torrent").unwrap();
+pub async fn run(path: &str, port: u32, peer_id: String) {
+    let mut torrent = Torrent::new(path, port, peer_id).unwrap();
     torrent.send().await.unwrap();
     let peer_manager_handle = PeerManagerHandle::new(torrent).await;
 }
