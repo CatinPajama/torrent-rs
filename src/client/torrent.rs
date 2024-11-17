@@ -67,7 +67,7 @@ pub struct Torrent {
     pub torrent_file: TorrentFile,
     pub info_hash: Vec<u8>,
     pub peer_ips: Vec<String>,
-    port: u32,
+    pub port: u32,
 }
 
 impl Torrent {

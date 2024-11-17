@@ -40,6 +40,7 @@ async fn run_peer_writer_actor(
                 stream.write_u8(3).await?;
             }
             Message::Have(ref piece_index) => {
+                println!("sending have {}", piece_index);
                 stream.write_u32(5).await?;
                 stream.write_u8(4).await?;
                 stream.write_u32(*piece_index).await?;
@@ -136,7 +137,7 @@ pub async fn create_peer(
 ) -> Result<(PeerReaderHandle, PeerWriterHandle), Box<dyn Error + Send + Sync>> {
     let stream_ = TcpStream::connect(&ip).await;
     let mut stream = stream_?;
-    println!("Connected");
+    // println!("Connected");
     stream.write_all(&[19]).await?;
     stream.write_all(b"BitTorrent protocol").await?;
     stream.write_all(&[0; 8]).await?;
@@ -154,7 +155,7 @@ pub async fn create_peer(
     stream.read_exact(&mut info_hash).await?;
     stream.read_exact(&mut peer_id).await?;
 
-    println!("finished handshake");
+    println!("Connected to {}", ip);
 
     let (reader, writer) = stream.into_split();
     let peer_reader_handle = PeerReaderHandle::new(reader, ip, peer_manager_sender);
@@ -177,7 +178,7 @@ async fn run_peer_reader_actor(
         }
         length -= 1;
         let id = stream.read_u8().await?;
-        println!("{} {}", id, length);
+        // println!("{} {}", id, length);
         let _ = sender
             .send(Action {
                 id: ip.clone(),

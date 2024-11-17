@@ -2,6 +2,7 @@ mod action;
 mod file;
 mod peer;
 mod peer_manager;
+mod server;
 mod torrent;
 mod tracker;
 
