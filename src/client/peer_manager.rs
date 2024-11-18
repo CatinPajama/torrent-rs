@@ -42,6 +42,8 @@ pub struct PeerManagerHandle {
 
 impl PeerManagerHandle {
     pub async fn new(torrent: Torrent) -> PeerManagerHandle {
+        let have_bitfield = torrent.verify();
+        println!("{:?}", have_bitfield);
         println!(
             "PIECE LENGTH : {} LENGTH : {} COUNT : {}",
             torrent.torrent_file.info.piece_length,
@@ -91,7 +93,7 @@ impl PeerManagerHandle {
             receiver,
             file_handler,
             bitfield: vec![0; piece_count],
-            have_bitfield: vec![false; piece_count],
+            have_bitfield,
             length: torrent.torrent_file.info.length,
             piece_length: torrent.torrent_file.info.piece_length,
         };

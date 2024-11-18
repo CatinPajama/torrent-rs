@@ -4,6 +4,7 @@ use serde_bencode::{de, value::Value};
 use serde_bytes::ByteBuf;
 use serde_derive::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+use std::fs::File;
 use std::{fs, io::Read};
 
 #[allow(dead_code)]
@@ -102,6 +103,39 @@ impl Torrent {
             peer_ips: vec![],
         })
     }
+    pub fn verify(&self) -> Vec<bool> {
+        let piece_count = self.torrent_file.info.pieces.len() / 20;
+        let file = File::open(&self.torrent_file.info.name);
+        let mut pieces = self.torrent_file.info.pieces.iter();
+        let piece_size = self.torrent_file.info.piece_length;
+        let length = self.torrent_file.info.length;
+        match file {
+            Ok(mut stream) => {
+                // TODO sha1
+                (0..piece_count)
+                    .map(move |p_index| {
+                        let buffer_size = if p_index < piece_count - 1 {
+                            piece_size
+                        } else {
+                            length - (piece_count as i64 - 1) * piece_size
+                        };
+                        let mut buffer = vec![0; buffer_size as usize];
+                        if stream.read_exact(&mut buffer).is_err() {
+                            return false;
+                        }
+                        let mut hasher = sha1::Sha1::new();
+                        hasher.update(buffer);
+                        let val = hasher.finalize().iter().eq(pieces.clone().take(20));
+                        pieces.nth(19);
+                        val
+                    })
+                    .collect()
+            }
+            Err(_) => {
+                vec![false; piece_count]
+            }
+        }
+    }
     fn gen_tracker_request(&self) -> Result<TrackerRequest, Box<dyn std::error::Error>> {
         Ok(TrackerRequest {
             announce_url: self.torrent_file.announce.clone(),
@@ -122,7 +156,6 @@ impl Torrent {
         println!("{}", url);
         let body = reqwest::get(&url).await?.bytes().await?;
         let tracker_response: TrackerResponse = de::from_bytes(&body)?;
-
         match tracker_response.peers {
             PeerIps::Dict(p) => {
                 for l in p {

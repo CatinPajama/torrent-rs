@@ -6,5 +6,5 @@ use std::env;
 async fn main() {
     let args: Vec<String> = env::args().collect();
     // TODO generate random peer id
-    run(&args[1], 6281, "gaurab".to_string()).await;
+    run(&args[1], args[2].parse().unwrap(), "gaurab".to_string()).await;
 }
