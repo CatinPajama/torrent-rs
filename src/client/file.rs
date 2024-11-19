@@ -5,7 +5,7 @@ use super::peer::PeerReaderHandle;
 use super::peer_manager::Action;
 use super::peer_manager::PeerManagerHandle;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom};
-use tokio::{fs::File, sync::mpsc};
+use tokio::{fs::File, fs::OpenOptions, sync::mpsc};
 
 pub struct FileManagerHandle {
     pub sender: mpsc::Sender<FileMessage>,
@@ -17,7 +17,13 @@ impl FileManagerHandle {
         piece_size: i64,
         peer_manager_handle: PeerManagerHandle,
     ) -> FileManagerHandle {
-        let stream = File::create(file_path).await.unwrap();
+        let stream = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(file_path)
+            .await
+            .unwrap();
         let (sender, receiver) = mpsc::channel(100);
         let actor = FileManagerActor {
             peer_manager_handle,

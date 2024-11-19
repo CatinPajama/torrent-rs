@@ -130,19 +130,22 @@ impl PeerReaderHandle {
 }
 
 pub async fn create_peer(
+    mut stream: TcpStream,
     ip: String,
     peer_manager_sender: mpsc::Sender<Action>,
     peer_id: Vec<u8>,
     info_hash: Vec<u8>,
 ) -> Result<(PeerReaderHandle, PeerWriterHandle), Box<dyn Error + Send + Sync>> {
-    let stream_ = TcpStream::connect(&ip).await;
-    let mut stream = stream_?;
-    // println!("Connected");
+    println!("try connecting to {}", ip);
+    //let stream_ = TcpStream::connect(&ip).await;
+    //let mut stream = stream_?;
+    println!("Connected before handshake");
     stream.write_all(&[19]).await?;
     stream.write_all(b"BitTorrent protocol").await?;
     stream.write_all(&[0; 8]).await?;
     stream.write_all(&info_hash).await?;
     stream.write_all(&peer_id).await?;
+    println!("handshake sent");
 
     let length = stream.read_u8().await?;
     let mut pstr: Vec<u8> = vec![0; length as usize];
