@@ -5,6 +5,7 @@ use serde_bytes::ByteBuf;
 use serde_derive::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::fs::File;
+use std::net::Ipv4Addr;
 use std::{fs, io::Read};
 
 #[allow(dead_code)]
@@ -105,6 +106,11 @@ impl Torrent {
     }
     pub fn verify(&self) -> Vec<bool> {
         let piece_count = self.torrent_file.info.pieces.len() / 20;
+        vec![true; piece_count]
+    }
+    /*
+    pub fn verify(&self) -> Vec<bool> {
+        let piece_count = self.torrent_file.info.pieces.len() / 20;
         let file = File::open(&self.torrent_file.info.name);
         let mut pieces = self.torrent_file.info.pieces.iter();
         let piece_size = self.torrent_file.info.piece_length;
@@ -136,26 +142,29 @@ impl Torrent {
             }
         }
     }
-    fn gen_tracker_request(&self) -> Result<TrackerRequest, Box<dyn std::error::Error>> {
+    */
+    pub fn gen_tracker_request(
+        &self,
+        downloaded: i64,
+        uploaded: i64,
+        left: i64,
+    ) -> Result<TrackerRequest, Box<dyn std::error::Error>> {
         Ok(TrackerRequest {
             announce_url: self.torrent_file.announce.clone(),
             compact: 1,
             info_hash: url::form_urlencoded::byte_serialize(&self.torrent_file.info_hash()?)
                 .collect(),
-            downloaded: 0,
-            uploaded: 0,
-            left: self.torrent_file.info.length,
+            downloaded,
+            uploaded,
+            //left: self.torrent_file.info.length,
+            left,
             peer_id: url::form_urlencoded::byte_serialize(&self.peer_id).collect(),
             port: self.port as i64,
-            event: "started".to_string(),
+            event: "completed".to_string(),
         })
     }
-    pub async fn send(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let tracker_request = self.gen_tracker_request()?;
-        let url = tracker_request.url()?;
-        println!("{}", url);
-        let body = reqwest::get(&url).await?.bytes().await?;
-        let tracker_response: TrackerResponse = de::from_bytes(&body)?;
+    pub fn handle_tracker_response(tracker_response: TrackerResponse) -> Vec<String> {
+        let mut peer_ips = vec![];
         match tracker_response.peers {
             PeerIps::Dict(p) => {
                 for l in p {
@@ -177,7 +186,7 @@ impl Torrent {
                             port = String::new();
                         }
                     }
-                    self.peer_ips.push(format!("{}:{}", ip, port));
+                    peer_ips.push(format!("{}:{}", ip, port));
                     /*
                     for (k, v) in l {
                         match v {
@@ -197,9 +206,26 @@ impl Torrent {
                 }
             }
             PeerIps::BinaryModel(s) => {
-                println!("{}", s);
+                let ip = Ipv4Addr::new(s[0], s[1], s[2], s[3]);
+                let port = u16::from_be_bytes([s[4], s[5]]);
+                peer_ips.push(format!("{}:{}", ip, port));
             }
         }
+        peer_ips
+    }
+    pub async fn send(
+        &mut self,
+        tracker_request: TrackerRequest,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // let tracker_request = self.gen_tracker_request()?;
+        let url = tracker_request.url()?;
+        println!("{}", url);
+        let body = reqwest::get(&url).await?.bytes().await?;
+        let tracker_response: TrackerResponse = de::from_bytes(&body)?;
+        self.peer_ips = Self::handle_tracker_response(tracker_response)
+            .into_iter()
+            .take(20)
+            .collect();
         Ok(())
     }
 }

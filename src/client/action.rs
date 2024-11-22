@@ -21,6 +21,7 @@ pub enum PeerManagerAction {
     Piece(u32, u32, Vec<u8>, i64),
     Download(u32),
     AddPeer(PeerWriterHandle),
+    RemovePeer,
 }
 
 pub struct FileMessage {

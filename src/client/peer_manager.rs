@@ -5,6 +5,7 @@ use super::file::FileManagerHandle;
 use super::peer::{create_peer, PeerWriterHandle};
 use super::server::ServerActor;
 use super::torrent::Torrent;
+use bit_vec::BitVec;
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
 use std::collections::HashMap;
@@ -42,9 +43,11 @@ pub struct PeerManagerHandle {
 }
 
 impl PeerManagerHandle {
-    pub async fn new(torrent: Torrent) -> PeerManagerHandle {
+    pub async fn new(mut torrent: Torrent) -> PeerManagerHandle {
         let have_bitfield = torrent.verify();
-        println!("{:?}", have_bitfield);
+        let tracker_request = torrent.gen_tracker_request(0, 0, 0).unwrap();
+        torrent.send(tracker_request).await.unwrap();
+        // println!("{:?}", have_bitfield);
         println!(
             "PIECE LENGTH : {} LENGTH : {} COUNT : {}",
             torrent.torrent_file.info.piece_length,
@@ -63,12 +66,13 @@ impl PeerManagerHandle {
         .await;
         //let mut peer_handler = HashMap::new();
         //let mut peer_state = HashMap::new();
-        for peer_ip in torrent.peer_ips.into_iter().take(10) {
+        for peer_ip in torrent.peer_ips.clone().into_iter() {
             let ip = peer_ip.clone();
             println!("{}", ip);
             let sender = sender.clone();
             let peer_id = torrent.peer_id.clone();
             let info_hash = torrent.info_hash.clone();
+            let temp_have_bitfield = have_bitfield.clone();
             //let mut interval = interval(Duration::from_secs(100));
             tokio::spawn(async move {
                 let stream_ = TcpStream::connect(&ip).await;
@@ -82,6 +86,13 @@ impl PeerManagerHandle {
                 )
                 .await
                 {
+                    let _ = peer_writer_handle
+                        .sender
+                        .send(Message::Bitfield(
+                            temp_have_bitfield.clone().into_iter().collect(),
+                        ))
+                        .await;
+
                     let _ = peer_writer_handle.sender.send(Message::Interested).await;
                     let _ = sender
                         .send(Action {
@@ -90,20 +101,16 @@ impl PeerManagerHandle {
                         })
                         .await;
                     //_ = interval.tick() => {}
+                } else {
+                    sender.send(Action {
+                        id : peer_ip.clone(),
+                        message : PeerManagerAction::RemovePeer,
+                    }).await;
                 }
             });
         }
         let piece_count = torrent.torrent_file.info.pieces.len() / 20;
-        let actor = PeerManagerActor {
-            peer_handler: HashMap::new(),
-            peer_state: HashMap::new(),
-            receiver,
-            file_handler,
-            bitfield: vec![0; piece_count],
-            have_bitfield,
-            length: torrent.torrent_file.info.length,
-            piece_length: torrent.torrent_file.info.piece_length,
-        };
+        println!("piece count {}", piece_count);
         let server_actor = ServerActor {
             peer_manager_handle: peer_manager_handle.clone(),
         };
@@ -114,6 +121,18 @@ impl PeerManagerHandle {
             torrent.info_hash.clone(),
         )
         .await;
+        let actor = PeerManagerActor {
+            peer_handler: HashMap::new(),
+            peer_state: HashMap::new(),
+            receiver,
+            file_handler,
+            bitfield: vec![0; piece_count],
+            have_bitfield,
+            length: torrent.torrent_file.info.length,
+            piece_length: torrent.torrent_file.info.piece_length,
+            torrent,
+        };
+
         run_piece_manager_actor(actor).await;
         peer_manager_handle
     }
@@ -128,11 +147,17 @@ struct PeerManagerActor {
     have_bitfield: Vec<bool>,
     length: i64,
     piece_length: i64,
+    torrent: Torrent,
+}
+
+fn calc_left(actor: &PeerManagerActor) -> i64 {
+    0
 }
 
 async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
     let mut choke_interval = interval(Duration::from_secs(20));
     let mut request_interval = interval(Duration::from_secs(10));
+    let mut announce_interval = interval(Duration::from_secs(30));
     loop {
         select! {
             Some(action) = actor.receiver.recv() => {
@@ -206,6 +231,10 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
                         actor.peer_handler.insert(action.id.clone(),write_handle);
                         actor.peer_state.insert(action.id,(ChokedState::Choked,InterestedState::NotInterested,0));
                     }
+                    PeerManagerAction::RemovePeer => {
+                        actor.peer_handler.remove(&action.id);
+                        actor.peer_state.remove(&action.id);
+                    }
                     PeerManagerAction::Piece(index,begin,block,speed) => {
                         // TODO check piece hash
                         if let Some(value) = actor.peer_state.get_mut(&action.id) {
@@ -226,8 +255,8 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
 
                 let mut peer_sort_by_upload : Vec<(i64,&String)> = actor.peer_state.iter().map(|(k,v)| (v.2,k)).collect();
                 peer_sort_by_upload.sort_by(|a, b| b.0.cmp(&a.0));
-                for (_,value) in peer_sort_by_upload.iter().take(3) {
-                    //println!("UNCHOKE MESSAGEG TO {}",value);
+                for (_,value) in peer_sort_by_upload.iter().take(20) {
+                    println!("UNCHOKE MESSAGEG TO {}",value);
                     let _ = actor.peer_handler[*value].sender.send(Message::Unchoke).await;
                 }
                 let mut rng = thread_rng();
@@ -245,22 +274,31 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
                         best = idx;
                     }
                 }
-                let mut size = actor.piece_length;
-                if best == actor.have_bitfield.len() - 1 {
-                    size = actor.length - (actor.bitfield.len() as i64 - 1) * size;
-                }
-                let actual_size = std::cmp::min(size,1 << 14);
-                println!("BEST PIECE TO DOWNLOA : {} PIECE SIZE {}",best,actual_size);
-                for peer_handle in actor.peer_handler.values().take(10) {
-                    let _ = peer_handle.sender.send(Message::Request(best as u32,0,actual_size as u32)).await;
+                if !actor.have_bitfield[best] {
+                    let mut size = actor.piece_length;
+                    if best == actor.have_bitfield.len() - 1 {
+                        size = actor.length - (actor.bitfield.len() as i64 - 1) * size;
+                    }
+                    let actual_size = std::cmp::min(size,1 << 14);
+                    println!("BEST PIECE TO DOWNLOA : {} PIECE SIZE {}",best,actual_size);
+                    for peer_handle in actor.peer_handler.values().take(10) {
+                        let _ = peer_handle.sender.send(Message::Request(best as u32,0,actual_size as u32)).await;
 
-                    let remain = size - actual_size;
-                    if remain != 0 {
-                        let _ = peer_handle.sender.send(Message::Request(best as u32,actual_size as u32, remain as u32)).await;
-                     }
+                        let remain = size - actual_size;
+                        if remain != 0 {
+                            let _ = peer_handle.sender.send(Message::Request(best as u32,actual_size as u32, remain as u32)).await;
+                         }
+                    }
                 }
-
             }
+        _ = announce_interval.tick() => {
+                let tracker_request = actor.torrent
+            .gen_tracker_request(0, 0, calc_left(&actor))
+            .unwrap();
+        actor.torrent.send(tracker_request).await.unwrap();
+
+
+        }
         }
     }
 }

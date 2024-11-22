@@ -46,9 +46,16 @@ async fn run_peer_writer_actor(
                 stream.write_u32(*piece_index).await?;
             }
             Message::Bitfield(bitfield) => {
-                stream.write_u32(bitfield.len() as u32 + 1).await?;
+                println!(
+                    "sending bitfield {} {}",
+                    bitfield.len(),
+                    bitfield.len() as u32 / 8
+                );
+                stream
+                    .write_u32((bitfield.len() as u32).div_ceil(8) + 1)
+                    .await?;
                 stream.write_u8(5).await?;
-                stream.write(&bitfield.to_bytes()).await?;
+                stream.write_all(&bitfield.to_bytes()).await?;
             }
             Message::Request(index, begin, length) => {
                 stream.write_u32(13).await?;
@@ -62,7 +69,7 @@ async fn run_peer_writer_actor(
                 stream.write_u8(7).await?;
                 stream.write_u32(index).await?;
                 stream.write_u32(begin).await?;
-                stream.write(&block).await?;
+                stream.write_all(&block).await?;
             }
             Message::Cancel(index, begin, length) => {
                 stream.write_u32(13).await?;
@@ -181,7 +188,7 @@ async fn run_peer_reader_actor(
         }
         length -= 1;
         let id = stream.read_u8().await?;
-        // println!("{} {}", id, length);
+        println!("{} {}", id, length);
         let _ = sender
             .send(Action {
                 id: ip.clone(),

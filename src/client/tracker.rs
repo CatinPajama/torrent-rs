@@ -1,3 +1,4 @@
+use serde_bytes::ByteBuf;
 use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -5,7 +6,7 @@ use std::collections::HashMap;
 #[serde(untagged)]
 pub enum PeerIps {
     Dict(Vec<HashMap<String, serde_bencode::value::Value>>),
-    BinaryModel(String),
+    BinaryModel(ByteBuf),
 }
 
 #[derive(Serialize, Deserialize)]

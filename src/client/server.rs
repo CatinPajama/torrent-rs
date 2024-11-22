@@ -13,7 +13,7 @@ pub struct ServerActor {
 
 impl ServerActor {
     pub async fn run(self, port: u32, peer_id: Vec<u8>, info_hash: Vec<u8>) {
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+        let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
             .await
             .unwrap();
 
