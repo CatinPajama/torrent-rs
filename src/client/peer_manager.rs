@@ -319,7 +319,6 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
                             //let _ = peer_handle.sender.send(Message::Interested).await;
                             let _ = peer_handle.sender.send(Message::Request(best as u32,downloaded as u32,actual_size as u32)).await;
 
-                            println!("BEST PIECE TO DOWNLOAD {} {} {}",best,actual_size,downloaded);
                             downloaded += actual_size;
                         }
                     }
