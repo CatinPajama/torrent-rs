@@ -1,3 +1,4 @@
+use log::info;
 use tokio::net::TcpListener;
 
 use crate::client::{
@@ -20,10 +21,8 @@ impl ServerActor {
         let sender = self.peer_manager_handle.sender.clone();
         tokio::spawn(async move {
             loop {
-                println!("WAITING");
                 let (stream, _) = listener.accept().await.unwrap();
                 let ip = stream.peer_addr().unwrap().to_string();
-                println!("Connected to server {}", ip);
                 if let Ok((_, peer_writer_handle)) = create_peer(
                     stream,
                     ip.clone(),
@@ -33,7 +32,7 @@ impl ServerActor {
                 )
                 .await
                 {
-                    println!("{} connected to our server", ip);
+                    info!("{} connected to our server", ip);
                     let _ = peer_writer_handle.sender.send(Message::Interested).await;
                     let _ = sender
                         .send(Action {

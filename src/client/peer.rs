@@ -6,8 +6,10 @@ use bit_vec::BitVec;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::TcpStream;
+use tokio::select;
 use tokio::time::Instant;
 use tokio::{net::tcp::OwnedWriteHalf, sync::mpsc};
+use tokio_util::sync::CancellationToken;
 
 pub struct PeerWriterActor {
     receiver: mpsc::Receiver<Message>,
@@ -40,17 +42,11 @@ async fn run_peer_writer_actor(
                 stream.write_u8(3).await?;
             }
             Message::Have(ref piece_index) => {
-                println!("sending have {}", piece_index);
                 stream.write_u32(5).await?;
                 stream.write_u8(4).await?;
                 stream.write_u32(*piece_index).await?;
             }
             Message::Bitfield(bitfield) => {
-                println!(
-                    "sending bitfield {} {}",
-                    bitfield.len(),
-                    bitfield.len() as u32 / 8
-                );
                 stream
                     .write_u32((bitfield.len() as u32).div_ceil(8) + 1)
                     .await?;
@@ -95,13 +91,20 @@ pub struct PeerWriterHandle {
 }
 
 impl PeerWriterHandle {
-    fn new(writer: OwnedWriteHalf) -> PeerWriterHandle {
-        let (sender, receiver) = mpsc::channel(100);
+    fn new(writer: OwnedWriteHalf, token: CancellationToken) -> PeerWriterHandle {
+        let (sender, receiver) = mpsc::channel(1000);
         let actor = PeerWriterActor { receiver, writer };
         tokio::spawn(async move {
-            let err = run_peer_writer_actor(actor).await;
-            if err.is_err() {
-                println!("PEER WRITER ERR {}", err.unwrap_err());
+            select! {
+                err = run_peer_writer_actor(actor) => {
+                    if err.is_err() {
+                        token.cancel();
+                        //println!("PEER WRITER ERR {}", err.unwrap_err());
+                    }
+                }
+                _ = token.cancelled() => {
+                        //println!("writer also got cancelled");
+                }
             }
         });
         PeerWriterHandle { sender }
@@ -123,13 +126,29 @@ impl PeerReaderHandle {
         reader: OwnedReadHalf,
         ip: String,
         peer_manager_sender: mpsc::Sender<Action>,
+        token: CancellationToken,
     ) -> PeerReaderHandle {
-        let (sender, receiver) = mpsc::channel(100);
+        let (sender, receiver) = mpsc::channel(1000);
         let actor = PeerReaderActor { receiver, reader };
+        let peer_manager_sender_clone = peer_manager_sender.clone();
+        let ip_clone = ip.clone();
         tokio::spawn(async move {
-            let err = run_peer_reader_actor(actor, ip, peer_manager_sender).await;
-            if err.is_err() {
-                println!("PEER READER ERROR: {}", err.unwrap_err());
+            select! {
+                err = run_peer_reader_actor(actor, ip, peer_manager_sender) => {
+                    if err.is_err() {
+                        peer_manager_sender_clone.send(Action {
+                            id : ip_clone,
+                            message : PeerManagerAction::RemovePeer,
+                        }).await.unwrap();
+                        token.cancel();
+                    }
+                }
+                _ = token.cancelled() => {
+                        peer_manager_sender_clone.send(Action {
+                            id : ip_clone,
+                            message : PeerManagerAction::RemovePeer,
+                        }).await.unwrap();
+                }
             }
         });
         PeerReaderHandle { sender }
@@ -143,21 +162,17 @@ pub async fn create_peer(
     peer_id: Vec<u8>,
     info_hash: Vec<u8>,
 ) -> Result<(PeerReaderHandle, PeerWriterHandle), Box<dyn Error + Send + Sync>> {
-    println!("try connecting to {}", ip);
     //let stream_ = TcpStream::connect(&ip).await;
     //let mut stream = stream_?;
-    println!("Connected before handshake");
     stream.write_all(&[19]).await?;
     stream.write_all(b"BitTorrent protocol").await?;
     stream.write_all(&[0; 8]).await?;
     stream.write_all(&info_hash).await?;
     stream.write_all(&peer_id).await?;
-    println!("handshake sent");
 
     let length = stream.read_u8().await?;
     let mut pstr: Vec<u8> = vec![0; length as usize];
     stream.read_exact(&mut pstr).await?;
-    println!("{}", pstr.iter().map(|c| *c as char).collect::<String>());
     let mut reserved: [u8; 8] = [0; 8];
     stream.read_exact(&mut reserved).await?;
     let mut info_hash: [u8; 20] = [0; 20];
@@ -165,11 +180,10 @@ pub async fn create_peer(
     stream.read_exact(&mut info_hash).await?;
     stream.read_exact(&mut peer_id).await?;
 
-    println!("Connected to {}", ip);
-
     let (reader, writer) = stream.into_split();
-    let peer_reader_handle = PeerReaderHandle::new(reader, ip, peer_manager_sender);
-    let peer_writer_handle = PeerWriterHandle::new(writer);
+    let token = CancellationToken::new();
+    let peer_reader_handle = PeerReaderHandle::new(reader, ip, peer_manager_sender, token.clone());
+    let peer_writer_handle = PeerWriterHandle::new(writer, token.clone());
     Ok((peer_reader_handle, peer_writer_handle))
 }
 
@@ -177,7 +191,7 @@ async fn run_peer_reader_actor(
     actor: PeerReaderActor,
     ip: String,
     sender: mpsc::Sender<Action>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut stream = actor.reader;
 
     loop {
@@ -188,7 +202,7 @@ async fn run_peer_reader_actor(
         }
         length -= 1;
         let id = stream.read_u8().await?;
-        println!("{} {}", id, length);
+        // println!("{} {}", id, length);
         let _ = sender
             .send(Action {
                 id: ip.clone(),
@@ -225,7 +239,7 @@ async fn run_peer_reader_actor(
                         let start_time = Instant::now();
                         stream.read_exact(&mut block).await?;
                         let duration = start_time.elapsed();
-                        let speed = length as u128 / duration.as_millis();
+                        let speed = length as u128 / std::cmp::max(duration.as_millis(), 1);
                         PeerManagerAction::Piece(piece_index, begin, block, speed as i64)
                     }
                     8 => {

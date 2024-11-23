@@ -19,7 +19,7 @@ pub enum Message {
 pub enum PeerManagerAction {
     MessageAction(Message),
     Piece(u32, u32, Vec<u8>, i64),
-    Download(u32),
+    Download(u32, i64),
     AddPeer(PeerWriterHandle),
     RemovePeer,
 }

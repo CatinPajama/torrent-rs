@@ -39,21 +39,25 @@ pub struct TrackerRequest {
     pub downloaded: i64,
     pub left: i64,
     pub compact: u8,
-    pub event: String,
+    pub event: Option<String>,
 }
 
 impl TrackerRequest {
     pub fn url(self) -> Result<String, Box<dyn std::error::Error>> {
-        Ok(format!("{}?peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact={}&event={}&info_hash={}",
-        &self.announce_url,
-        &self.peer_id,
-        &self.port,
-        &self.uploaded.to_string(),
-        &self.downloaded.to_string(),
-        &self.left.to_string(),
-        &self.compact.to_string(),
-        &self.event,
-        &self.info_hash,
-    ))
+        Ok(format!(
+            "{}?peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact={}&info_hash={}{}",
+            &self.announce_url,
+            &self.peer_id,
+            &self.port,
+            &self.uploaded.to_string(),
+            &self.downloaded.to_string(),
+            &self.left.to_string(),
+            &self.compact.to_string(),
+            &self.info_hash,
+            match self.event {
+                Some(event) => format!("&event={}", event),
+                None => "".to_string(),
+            }
+        ))
     }
 }

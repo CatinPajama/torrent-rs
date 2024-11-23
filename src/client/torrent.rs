@@ -68,7 +68,7 @@ pub struct Torrent {
     pub peer_id: Vec<u8>,
     pub torrent_file: TorrentFile,
     pub info_hash: Vec<u8>,
-    pub peer_ips: Vec<String>,
+    //    pub peer_ips: Vec<String>,
     pub port: u32,
 }
 
@@ -76,15 +76,15 @@ impl Torrent {
     pub fn new(
         path: &str,
         port: u32,
-        peer_id: String,
+        peer_id: Vec<u8>,
     ) -> Result<Torrent, Box<dyn std::error::Error>> {
         let mut file = fs::File::open(path).unwrap();
         let mut contents = vec![];
         file.read_to_end(&mut contents).unwrap();
         let torrent_file = de::from_bytes::<TorrentFile>(&contents).unwrap();
-        let mut peer_hasher = sha1::Sha1::new();
-        peer_hasher.update(peer_id);
-        let peer_hash = peer_hasher.finalize().into_iter().collect::<Vec<u8>>();
+        // let mut peer_hasher = sha1::Sha1::new();
+        // peer_hasher.update(peer_id);
+        // let peer_hash = peer_hasher.finalize().into_iter().collect::<Vec<u8>>();
 
         let mut info_hasher = Sha1::new();
         let serialized = serde_bencode::to_bytes(&torrent_file.info)?;
@@ -100,54 +100,17 @@ impl Torrent {
             port,
             torrent_file,
             info_hash: info_hash.into_iter().collect::<Vec<u8>>(),
-            peer_id: peer_hash,
-            peer_ips: vec![],
+            peer_id,
+            // peer_ips: vec![],
         })
     }
-    pub fn verify(&self) -> Vec<bool> {
-        let piece_count = self.torrent_file.info.pieces.len() / 20;
-        vec![true; piece_count]
-    }
-    /*
-    pub fn verify(&self) -> Vec<bool> {
-        let piece_count = self.torrent_file.info.pieces.len() / 20;
-        let file = File::open(&self.torrent_file.info.name);
-        let mut pieces = self.torrent_file.info.pieces.iter();
-        let piece_size = self.torrent_file.info.piece_length;
-        let length = self.torrent_file.info.length;
-        match file {
-            Ok(mut stream) => {
-                // TODO sha1
-                (0..piece_count)
-                    .map(move |p_index| {
-                        let buffer_size = if p_index < piece_count - 1 {
-                            piece_size
-                        } else {
-                            length - (piece_count as i64 - 1) * piece_size
-                        };
-                        let mut buffer = vec![0; buffer_size as usize];
-                        if stream.read_exact(&mut buffer).is_err() {
-                            return false;
-                        }
-                        let mut hasher = sha1::Sha1::new();
-                        hasher.update(buffer);
-                        let val = hasher.finalize().iter().eq(pieces.clone().take(20));
-                        pieces.nth(19);
-                        val
-                    })
-                    .collect()
-            }
-            Err(_) => {
-                vec![false; piece_count]
-            }
-        }
-    }
-    */
+
     pub fn gen_tracker_request(
         &self,
         downloaded: i64,
         uploaded: i64,
         left: i64,
+        event: Option<String>,
     ) -> Result<TrackerRequest, Box<dyn std::error::Error>> {
         Ok(TrackerRequest {
             announce_url: self.torrent_file.announce.clone(),
@@ -160,7 +123,7 @@ impl Torrent {
             left,
             peer_id: url::form_urlencoded::byte_serialize(&self.peer_id).collect(),
             port: self.port as i64,
-            event: "completed".to_string(),
+            event,
         })
     }
     pub fn handle_tracker_response(tracker_response: TrackerResponse) -> Vec<String> {
@@ -168,41 +131,15 @@ impl Torrent {
         match tracker_response.peers {
             PeerIps::Dict(p) => {
                 for l in p {
-                    let ip;
-                    let port: String;
-                    match &l["ip"] {
-                        Value::Bytes(s) => {
-                            ip = s.iter().map(|c| *c as char).collect::<String>();
-                        }
-                        _ => {
-                            ip = String::new();
-                        }
-                    }
-                    match &l["port"] {
-                        Value::Int(x) => {
-                            port = x.to_string();
-                        }
-                        _ => {
-                            port = String::new();
-                        }
-                    }
+                    let ip = match &l["ip"] {
+                        Value::Bytes(s) => s.iter().map(|c| *c as char).collect::<String>(),
+                        _ => String::new(),
+                    };
+                    let port = match &l["port"] {
+                        Value::Int(x) => x.to_string(),
+                        _ => String::new(),
+                    };
                     peer_ips.push(format!("{}:{}", ip, port));
-                    /*
-                    for (k, v) in l {
-                        match v {
-                            Value::Bytes(b) => {
-                                println!(
-                                    "{} {}",
-                                    k,
-                                    b.iter().map(|c| *c as char).collect::<String>()
-                                );
-                            }
-                            _ => {
-                                println!("{} : {:?}", k, v);
-                            }
-                        }
-                    }
-                    */
                 }
             }
             PeerIps::BinaryModel(s) => {
@@ -216,16 +153,11 @@ impl Torrent {
     pub async fn send(
         &mut self,
         tracker_request: TrackerRequest,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         // let tracker_request = self.gen_tracker_request()?;
         let url = tracker_request.url()?;
-        println!("{}", url);
         let body = reqwest::get(&url).await?.bytes().await?;
         let tracker_response: TrackerResponse = de::from_bytes(&body)?;
-        self.peer_ips = Self::handle_tracker_response(tracker_response)
-            .into_iter()
-            .take(20)
-            .collect();
-        Ok(())
+        Ok(Self::handle_tracker_response(tracker_response))
     }
 }
