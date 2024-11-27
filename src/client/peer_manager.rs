@@ -9,7 +9,9 @@ use super::BLOCK_SIZE;
 use log::info;
 use rand::seq::IteratorRandom;
 use rand::thread_rng;
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::fmt::Binary;
 use std::path::Path;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -190,7 +192,7 @@ struct PeerManagerActor {
 
 async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
     let mut choke_interval = interval(Duration::from_secs(10));
-    let mut request_interval = interval(Duration::from_secs(5));
+    let mut request_interval = interval(Duration::from_secs(1));
     let mut announce_interval = interval(Duration::from_secs(15));
     let mut keep_interval = interval(Duration::from_secs(120));
     loop {
@@ -299,17 +301,10 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
                 }
             }
             _ = request_interval.tick() => {
-                let mut lowest = i64::MAX;
-                let mut best = 0;
-                for (idx,b) in actor.bitfield.iter().enumerate() {
-                    if *b < lowest && !actor.have_bitfield[idx] {
-                        lowest = *b;
-                        best = idx;
-                    }
-                }
-                if !actor.have_bitfield[best] {
+                let max_heap = actor.bitfield.clone().into_iter().enumerate().filter(|x| !actor.have_bitfield[x.0 as usize]).map(|x| (Reverse(x.1),x.0)).collect::<BinaryHeap<(Reverse<i64>,usize)>>();
+                for (_,best) in max_heap.iter().take(3) {
                     let mut size = actor.piece_length;
-                    if best == actor.have_bitfield.len() - 1 {
+                    if *best == actor.have_bitfield.len() - 1 {
                         size = actor.length - (actor.bitfield.len() as i64 - 1) * size;
                     }
                     let mut downloaded = 0;
@@ -317,7 +312,7 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
                         while downloaded < size {
                             let actual_size = std::cmp::min(std::cmp::min(size,BLOCK_SIZE),size - downloaded);
                             //let _ = peer_handle.sender.send(Message::Interested).await;
-                            let _ = peer_handle.sender.send(Message::Request(best as u32,downloaded as u32,actual_size as u32)).await;
+                            let _ = peer_handle.sender.send(Message::Request(*best as u32,downloaded as u32,actual_size as u32)).await;
 
                             downloaded += actual_size;
                         }
@@ -328,8 +323,10 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
                 let peer_cnt = actor.peer_handler.len();
                 let size = actor.torrent.torrent_file.info.length;
                 if let Ok(tracker_request) = actor.torrent.gen_tracker_request(actor.downloaded,actor.uploaded,size - actor.downloaded ,None) {
-                    let peer_ips = actor.torrent.send(tracker_request).await.unwrap().into_iter().take(std::cmp::max(0,30 - peer_cnt)).collect();
-                    add_peer_to_manager(peer_ips, actor.sender.clone(), actor.torrent.peer_id.clone(), actor.torrent.info_hash.clone(), actor.have_bitfield.clone());
+                    if let Ok(peer_ips) = actor.torrent.send(tracker_request).await {
+                        let peer_max_30 = peer_ips.into_iter().take(std::cmp::max(0,30-peer_cnt)).collect();
+                        add_peer_to_manager(peer_max_30, actor.sender.clone(), actor.torrent.peer_id.clone(), actor.torrent.info_hash.clone(), actor.have_bitfield.clone());
+                    }
                 }
            }
             _ = keep_interval.tick() => {

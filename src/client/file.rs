@@ -105,7 +105,7 @@ async fn run_file_manager_actor(mut actor: FileManagerActor) {
             }
             FileAction::Write(index, begin, block) => {
                 let offset = begin;
-                let block_index = (offset as i64 / BLOCK_SIZE);
+                let block_index = offset as i64 / BLOCK_SIZE;
                 actor
                     .stream
                     .seek(SeekFrom::Start(
