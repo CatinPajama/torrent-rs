@@ -14,7 +14,7 @@ pub struct TrackerResponse {
     #[serde(rename = "failure reason")]
     pub failure_reason: Option<String>,
     #[serde(rename = "interval")]
-    pub interval: Option<i64>,
+    pub interval: i64,
     #[serde(rename = "complete")]
     pub complete: Option<i64>,
     #[serde(rename = "warning reason")]
@@ -43,9 +43,9 @@ pub struct TrackerRequest {
 }
 
 impl TrackerRequest {
-    pub fn url(self) -> Result<String, Box<dyn std::error::Error>> {
+    pub fn url(&self, trackerid: &Option<String>) -> Result<String, Box<dyn std::error::Error>> {
         Ok(format!(
-            "{}?peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact={}&info_hash={}{}",
+            "{}?peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact={}&info_hash={}{}{}",
             &self.announce_url,
             &self.peer_id,
             &self.port,
@@ -54,8 +54,12 @@ impl TrackerRequest {
             &self.left.to_string(),
             &self.compact.to_string(),
             &self.info_hash,
-            match self.event {
+            match &self.event {
                 Some(event) => format!("&event={}", event),
+                None => "".to_string(),
+            },
+            match trackerid {
+                Some(event) => format!("&trackerid={}", event),
                 None => "".to_string(),
             }
         ))

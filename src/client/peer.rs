@@ -18,9 +18,18 @@ pub struct PeerWriterActor {
 
 async fn run_peer_writer_actor(
     mut actor: PeerWriterActor,
+    peer_id: Vec<u8>,
+    info_hash: Vec<u8>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let stream = &mut actor.writer;
+
+    stream.write_all(&[19]).await?;
+    stream.write_all(b"BitTorrent protocol").await?;
+    stream.write_all(&[0; 8]).await?;
+    stream.write_all(&info_hash).await?;
+    stream.write_all(&peer_id).await?;
+
     while let Some(message) = actor.receiver.recv().await {
-        let stream = &mut actor.writer;
         match message {
             Message::KeepAlive => {
                 stream.write_u32(0).await?;
@@ -91,12 +100,17 @@ pub struct PeerWriterHandle {
 }
 
 impl PeerWriterHandle {
-    fn new(writer: OwnedWriteHalf, token: CancellationToken) -> PeerWriterHandle {
+    fn new(
+        writer: OwnedWriteHalf,
+        token: CancellationToken,
+        peer_id: Vec<u8>,
+        info_hash: Vec<u8>,
+    ) -> PeerWriterHandle {
         let (sender, receiver) = mpsc::channel(1000);
         let actor = PeerWriterActor { receiver, writer };
         tokio::spawn(async move {
             select! {
-                err = run_peer_writer_actor(actor) => {
+                err = run_peer_writer_actor(actor,peer_id,info_hash) => {
                     if err.is_err() {
                         token.cancel();
                         //println!("PEER WRITER ERR {}", err.unwrap_err());
@@ -164,12 +178,7 @@ pub async fn create_peer(
 ) -> Result<(PeerReaderHandle, PeerWriterHandle), Box<dyn Error + Send + Sync>> {
     //let stream_ = TcpStream::connect(&ip).await;
     //let mut stream = stream_?;
-    stream.write_all(&[19]).await?;
-    stream.write_all(b"BitTorrent protocol").await?;
-    stream.write_all(&[0; 8]).await?;
-    stream.write_all(&info_hash).await?;
-    stream.write_all(&peer_id).await?;
-
+    /*
     let length = stream.read_u8().await?;
     let mut pstr: Vec<u8> = vec![0; length as usize];
     stream.read_exact(&mut pstr).await?;
@@ -180,10 +189,17 @@ pub async fn create_peer(
     stream.read_exact(&mut info_hash).await?;
     stream.read_exact(&mut peer_id).await?;
 
+    stream.write_all(&[19]).await?;
+    stream.write_all(b"BitTorrent protocol").await?;
+    stream.write_all(&[0; 8]).await?;
+    stream.write_all(&info_hash).await?;
+    stream.write_all(&peer_id).await?;
+    */
+
     let (reader, writer) = stream.into_split();
     let token = CancellationToken::new();
     let peer_reader_handle = PeerReaderHandle::new(reader, ip, peer_manager_sender, token.clone());
-    let peer_writer_handle = PeerWriterHandle::new(writer, token.clone());
+    let peer_writer_handle = PeerWriterHandle::new(writer, token.clone(), peer_id, info_hash);
     Ok((peer_reader_handle, peer_writer_handle))
 }
 
@@ -193,6 +209,16 @@ async fn run_peer_reader_actor(
     sender: mpsc::Sender<Action>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let mut stream = actor.reader;
+
+    let length = stream.read_u8().await?;
+    let mut pstr: Vec<u8> = vec![0; length as usize];
+    stream.read_exact(&mut pstr).await?;
+    let mut reserved: [u8; 8] = [0; 8];
+    stream.read_exact(&mut reserved).await?;
+    let mut info_hash: [u8; 20] = [0; 20];
+    let mut peer_id: [u8; 20] = [0; 20];
+    stream.read_exact(&mut info_hash).await?;
+    stream.read_exact(&mut peer_id).await?;
 
     loop {
         let mut length = stream.read_u32().await?;

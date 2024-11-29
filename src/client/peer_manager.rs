@@ -79,9 +79,9 @@ fn add_peer_to_manager(
                     ))
                     .await;
 
-                // let _ = peer_writer_handle.sender.send(Message::Unchoke).await;
-
                 let _ = peer_writer_handle.sender.send(Message::Interested).await;
+
+                let _ = peer_writer_handle.sender.send(Message::Unchoke).await;
                 let _ = sender
                     .send(Action {
                         id: peer_ip.clone(),
@@ -96,14 +96,14 @@ fn add_peer_to_manager(
 
 impl PeerManagerHandle {
     pub async fn new(mut torrent: Torrent, download_path: &str) -> PeerManagerHandle {
-        let have_bitfield = verify(&torrent, download_path);
+        let (have_bitfield, actual_length) = verify(&torrent, download_path);
         let tracker_request = torrent
-            .gen_tracker_request(0, 0, 0, Some("started".to_string()))
+            .gen_tracker_request(0, 0, actual_length, Some("started".to_string()))
             .unwrap();
-        let peer_ips = torrent
-            .send(tracker_request)
-            .await
-            .unwrap()
+        // let url = tracker_request.url().unwrap();
+        // println!("{}", &url);
+        let tracker_response = torrent.send(tracker_request).await.unwrap();
+        let peer_ips = Torrent::handle_tracker_response(&tracker_response)
             .into_iter()
             .take(30)
             .collect();
@@ -140,6 +140,7 @@ impl PeerManagerHandle {
             torrent.port,
             torrent.peer_id.clone(),
             torrent.info_hash.clone(),
+            have_bitfield.clone(),
         )
         .await;
         let left: Vec<Vec<bool>> = (0..piece_count)
@@ -167,6 +168,8 @@ impl PeerManagerHandle {
             downloaded: 0,
             uploaded: 0,
             left,
+            actual_length,
+            interval: tracker_response.interval,
         };
 
         run_piece_manager_actor(actor).await;
@@ -188,12 +191,15 @@ struct PeerManagerActor {
     downloaded: i64,
     uploaded: i64,
     left: Vec<Vec<bool>>,
+    actual_length: i64,
+    interval: i64,
 }
 
 async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
     let mut choke_interval = interval(Duration::from_secs(10));
     let mut request_interval = interval(Duration::from_secs(1));
-    let mut announce_interval = interval(Duration::from_secs(15));
+    let mut announce_interval = interval(Duration::from_secs(actor.interval as u64));
+    announce_interval.tick().await;
     let mut keep_interval = interval(Duration::from_secs(120));
     loop {
         select! {
@@ -233,7 +239,7 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
                         actor.bitfield[index as usize] += 1;
                     }
                     Message::Request(index,begin,size) => {
-                        info!("Request for piece {}",index);
+                        //info!("Request for piece {}",index);
                         if actor.have_bitfield[index as usize] {
                             let (sender, receiver) = oneshot::channel();
                             let _ = actor.file_handler.sender.send(FileMessage{sender, message : FileAction::Read(index,begin,size)}).await;
@@ -258,14 +264,15 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
                         }
                     }
                     PeerManagerAction::AddPeer(write_handle) => {
-                        info!("Added peer {}",&action.id);
+                        info!("Peer Count {}",actor.peer_state.len());
                         actor.peer_handler.insert(action.id.clone(),write_handle);
                         actor.peer_state.insert(action.id,(ChokedState::Choked,InterestedState::NotInterested,0));
                     }
                     PeerManagerAction::RemovePeer => {
                         actor.peer_handler.remove(&action.id);
                         actor.peer_state.remove(&action.id);
-                        info!("Removed peer {}",action.id);
+                        info!("Peer Count {}",actor.peer_state.len());
+                        //info!("Removed peer {}",action.id);
                     }
                     PeerManagerAction::Piece(index,begin,block,speed) => {
                         // TODO check piece hash
@@ -322,11 +329,17 @@ async fn run_piece_manager_actor(mut actor: PeerManagerActor) {
         _ = announce_interval.tick() => {
                 let peer_cnt = actor.peer_handler.len();
                 let size = actor.torrent.torrent_file.info.length;
-                if let Ok(tracker_request) = actor.torrent.gen_tracker_request(actor.downloaded,actor.uploaded,size - actor.downloaded ,None) {
-                    if let Ok(peer_ips) = actor.torrent.send(tracker_request).await {
-                        let peer_max_30 = peer_ips.into_iter().take(std::cmp::max(0,30-peer_cnt)).collect();
+                if let Ok(tracker_request) = actor.torrent.gen_tracker_request(actor.downloaded,actor.uploaded,actor.actual_length,None) {
+                    // println!("{}",tracker_request.url().unwrap());
+                    if let Ok(tracker_response) = actor.torrent.send(tracker_request).await {
+                        actor.interval = tracker_response.interval;
+                        let peer_ips = Torrent::handle_tracker_response(&tracker_response);
+                         let peer_max_30 = peer_ips.into_iter().take(std::cmp::max(0,30-peer_cnt)).collect();
+                          //  info!("{:?}",peer_max_30);
                         add_peer_to_manager(peer_max_30, actor.sender.clone(), actor.torrent.peer_id.clone(), actor.torrent.info_hash.clone(), actor.have_bitfield.clone());
                     }
+                } else {
+                    println!("err");
                 }
            }
             _ = keep_interval.tick() => {

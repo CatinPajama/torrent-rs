@@ -51,7 +51,7 @@ struct FileManagerActor {
     piece_size: i64,
 }
 
-pub fn verify(torrent: &Torrent, download_path: &str) -> Vec<bool> {
+pub fn verify(torrent: &Torrent, download_path: &str) -> (Vec<bool>, i64) {
     let piece_count = torrent.torrent_file.info.pieces.len() / 20;
     let file = std::fs::File::open(
         Path::new(download_path)
@@ -63,9 +63,10 @@ pub fn verify(torrent: &Torrent, download_path: &str) -> Vec<bool> {
     let mut pieces = torrent.torrent_file.info.pieces.iter();
     let piece_size = torrent.torrent_file.info.piece_length;
     let length = torrent.torrent_file.info.length;
-    match file {
+    let mut actual_length = 0;
+    let have_bitfield = match file {
         Ok(mut stream) => (0..piece_count)
-            .map(move |p_index| {
+            .map(|p_index| {
                 let buffer_size = if p_index < piece_count - 1 {
                     piece_size
                 } else {
@@ -79,13 +80,20 @@ pub fn verify(torrent: &Torrent, download_path: &str) -> Vec<bool> {
                 hasher.update(buffer);
                 let val = hasher.finalize().iter().eq(pieces.clone().take(20));
                 pieces.nth(19);
+                if val {
+                    actual_length += buffer_size;
+                }
                 val
             })
             .collect(),
         Err(_) => {
             vec![false; piece_count]
         }
-    }
+    };
+    (
+        have_bitfield,
+        torrent.torrent_file.info.length - actual_length,
+    )
 }
 
 async fn run_file_manager_actor(mut actor: FileManagerActor) {

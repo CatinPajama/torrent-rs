@@ -1,9 +1,11 @@
 use super::tracker::{PeerIps, TrackerRequest, TrackerResponse};
-use serde_bencode::Error;
+// use serde_bencode::Error;
 use serde_bencode::{de, value::Value};
 use serde_bytes::ByteBuf;
 use serde_derive::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
+use std::error::Error;
+use std::fmt;
 use std::fs::File;
 use std::net::Ipv4Addr;
 use std::{fs, io::Read};
@@ -33,7 +35,7 @@ pub struct Info {
 pub struct TorrentFile {
     pub info: Info,
     pub announce: String,
-    #[serde(rename = "announce list")]
+    #[serde(rename = "announce-list")]
     announce_list: Option<Vec<Vec<String>>>,
     encoding: Option<String>,
     #[serde(rename = "creation date")]
@@ -44,9 +46,11 @@ pub struct TorrentFile {
 }
 
 impl TorrentFile {
+    /*
     pub fn read_bytes(contents: &[u8]) -> Result<TorrentFile, Error> {
         de::from_bytes::<TorrentFile>(contents)
     }
+    */
 
     pub fn info_hash(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut hasher = Sha1::new();
@@ -70,7 +74,17 @@ pub struct Torrent {
     pub info_hash: Vec<u8>,
     //    pub peer_ips: Vec<String>,
     pub port: u32,
+    pub trackerid: Option<String>,
 }
+
+#[derive(Debug)]
+pub struct InvalidTracker;
+impl fmt::Display for InvalidTracker {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "No tcp tracker")
+    }
+}
+impl Error for InvalidTracker {}
 
 impl Torrent {
     pub fn new(
@@ -101,6 +115,7 @@ impl Torrent {
             torrent_file,
             info_hash: info_hash.into_iter().collect::<Vec<u8>>(),
             peer_id,
+            trackerid: None,
             // peer_ips: vec![],
         })
     }
@@ -112,6 +127,27 @@ impl Torrent {
         left: i64,
         event: Option<String>,
     ) -> Result<TrackerRequest, Box<dyn std::error::Error>> {
+        if let Some(announce_list) = &self.torrent_file.announce_list {
+            for announce_url in announce_list.clone().iter().flatten() {
+                if announce_url.starts_with("http") {
+                    return Ok(TrackerRequest {
+                        announce_url: announce_url.clone(),
+                        compact: 1,
+                        info_hash: url::form_urlencoded::byte_serialize(
+                            &self.torrent_file.info_hash()?,
+                        )
+                        .collect(),
+                        downloaded,
+                        uploaded,
+                        //left: self.torrent_file.info.length,
+                        left,
+                        peer_id: url::form_urlencoded::byte_serialize(&self.peer_id).collect(),
+                        port: self.port as i64,
+                        event,
+                    });
+                }
+            }
+        }
         Ok(TrackerRequest {
             announce_url: self.torrent_file.announce.clone(),
             compact: 1,
@@ -126,9 +162,10 @@ impl Torrent {
             event,
         })
     }
-    pub fn handle_tracker_response(tracker_response: TrackerResponse) -> Vec<String> {
+
+    pub fn handle_tracker_response(tracker_response: &TrackerResponse) -> Vec<String> {
         let mut peer_ips = vec![];
-        match tracker_response.peers {
+        match &tracker_response.peers {
             PeerIps::Dict(p) => {
                 for l in p {
                     let ip = match &l["ip"] {
@@ -143,9 +180,11 @@ impl Torrent {
                 }
             }
             PeerIps::BinaryModel(s) => {
-                let ip = Ipv4Addr::new(s[0], s[1], s[2], s[3]);
-                let port = u16::from_be_bytes([s[4], s[5]]);
-                peer_ips.push(format!("{}:{}", ip, port));
+                if !s.is_empty() {
+                    let ip = Ipv4Addr::new(s[0], s[1], s[2], s[3]);
+                    let port = u16::from_be_bytes([s[4], s[5]]);
+                    peer_ips.push(format!("{}:{}", ip, port));
+                }
             }
         }
         peer_ips
@@ -153,11 +192,15 @@ impl Torrent {
     pub async fn send(
         &mut self,
         tracker_request: TrackerRequest,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    ) -> Result<TrackerResponse, Box<dyn std::error::Error>> {
         // let tracker_request = self.gen_tracker_request()?;
-        let url = tracker_request.url()?;
+        let url = tracker_request.url(&self.trackerid)?;
+        println!("{}", url);
         let body = reqwest::get(&url).await?.bytes().await?;
         let tracker_response: TrackerResponse = de::from_bytes(&body)?;
-        Ok(Self::handle_tracker_response(tracker_response))
+        self.trackerid = tracker_response.tracker_id.clone();
+        println!("{:?}", self.trackerid);
+        //Ok(Self::handle_tracker_response(tracker_response))
+        Ok(tracker_response)
     }
 }
